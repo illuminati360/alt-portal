@@ -1,0 +1,25 @@
+{
+  "name": "alt-portal",
+  "version": "1.0.0",
+  "description": "",
+  "main": "build/server.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node -r dotenv/config ."
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/superagent": "^4.1.10",
+    "@typescript-eslint/eslint-plugin": "^4.11.1",
+    "@typescript-eslint/parser": "^4.11.1",
+    "dotenv": "^8.2.0",
+    "eslint": "^7.16.0",
+    "typescript": "^4.1.3"
+  },
+  "dependencies": {
+    "@microsoft/mixed-reality-extension-sdk": "^0.20.0",
+    "cheerio": "^1.0.0-rc.5",
+    "superagent": "^6.1.0"
+  }
+}
