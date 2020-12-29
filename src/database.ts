@@ -10,13 +10,13 @@ const password = process.env['PASSWORD'];
 
 const BASEURL = 'https://account.altvr.com';
 
-type ObjectDescriptor = {
+export type PortalItem = {
     thumbnailUri: string;
-    resourceId: string;
+    spaceId: string;
     name: string;
 };
 
-type PagerItem = {
+export type PagerItem = {
     text: string,
     url: string
 };
@@ -28,7 +28,7 @@ export class AltVRPortalCrawler{
     public async searchPortals(keyword: string){
         let token = await this.getToken();
         let cookie = await this.login(token);
-        if (keyword.length < 2){ return false; }
+        if (keyword.length < 2){ return {items: [], pager: []}; }
         let relativePath = `/worlds/search?q=${keyword}`
         let url = `${BASEURL}${relativePath}`;
         let text = await this.getPage(url, cookie);
@@ -88,7 +88,7 @@ export class AltVRPortalCrawler{
     }
 
     private parseText(text: string){
-        let items: ObjectDescriptor[] = [];
+        let items: PortalItem[] = [];
         let pager: PagerItem[] = [];
 
         var $ = cheerio.load(text);
@@ -96,12 +96,12 @@ export class AltVRPortalCrawler{
             let label = $(e).find('a.block-link').attr('aria-label');
             let name = label ? label : '';
             let href = $(e).find('a.block-link').attr('href');
-            let resourceId = href ? (href.split('/').pop() as string) : '';
+            let spaceId = href ? (href.split('/').pop() as string) : '';
             let src = $(e).find('div.image-wrapper img').attr('src');
             let thumbnailUri = src ? src : '';
             let it = { 
                 name,
-                resourceId,
+                spaceId,
                 thumbnailUri
             };
             items.push(it);

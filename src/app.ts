@@ -1,4 +1,18 @@
 import * as MRE from '@microsoft/mixed-reality-extension-sdk';
+import { PlanarGridLayout, Plane, Quaternion } from '@microsoft/mixed-reality-extension-sdk';
+import { AltVRPortalCrawler, PortalItem } from './database';
+import { GridMenu } from './menu';
+
+const MENU_CELL_WIDTH = 0.2;
+const MENU_CELL_HEIGHT = 0.1;
+const MENU_CELL_DEPTH = 0.02;
+const MENU_CELL_MARGIN = MENU_CELL_WIDTH/6;
+const MENU_TEXT_HEIGHT = 0.009;
+
+const PORTAL_DIMENSIONS = {width: 1, height: 1, depth: 2};
+const PANEL_DIMENSIONS = {width: 0.3, height: 0.01, depth: 0.3};
+
+const DEBUG = false;
 
 export default class PortalApp {
     private context: MRE.Context;
@@ -11,6 +25,22 @@ export default class PortalApp {
     public materials: Map<string, MRE.Material>;
     public sounds: Map<string, MRE.Sound>;
 
+    // actors
+    private anchor: MRE.Actor;
+    private menuAnchor: MRE.Actor;
+    private menu: GridMenu;
+
+    private panelBoxMeshId: MRE.Guid;
+    private panelPlaneMeshId: MRE.Guid;
+
+    // logic
+    private crawler: AltVRPortalCrawler;
+    private portalItems: PortalItem[];
+    private portals: Portal[];
+
+    private portalGridAnchor: MRE.Actor;
+    private portalGrid: PlanarGridLayout;
+
     // constructor
     constructor(private _context: MRE.Context, private params: MRE.ParameterSet, _baseUrl: string) {
         this.context = _context;
@@ -22,11 +52,35 @@ export default class PortalApp {
         this.materials = new Map<string, MRE.Material>();
         this.sounds = new Map<string, MRE.Sound>();
 
+        this.anchor = MRE.Actor.Create(this.context, {
+            actor:{ 
+                parentId: this.anchor.id,
+                transform: {
+                    local: { rotation : Quaternion.FromEulerAngles(
+                        -90,
+                        0,
+                        0
+                    ) }
+                }
+            },
+        });
+        this.portalGridAnchor = MRE.Actor.Create(this.context, {
+            actor:{ 
+                parentId: this.anchor.id,
+            },
+        });
+
+        this.panelBoxMeshId = this.assets.createBoxMesh('panel_box', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height, PANEL_DIMENSIONS.depth).id;
+        this.panelPlaneMeshId = this.assets.createPlaneMesh('panel_plane', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height).id;
+
+        this.crawler = new AltVRPortalCrawler();
+
         this.context.onStarted(() => this.init());
     }
 
     private async init(){
-        let root = MRE.Actor.Create(this.context, {
+        await this.loadMaterials();
+        this.anchor = MRE.Actor.Create(this.context, {
             actor:{ 
                 grabbable: false,
                 transform: { 
@@ -34,17 +88,235 @@ export default class PortalApp {
                 }
             },
         });
-        MRE.Actor.CreateFromLibrary(this.context, {
-            resourceId: "teleporter:space/1444446284042731658?label=true",
+        this.createMenu();
+    }
+
+    private createMenu(){
+        const MENU_ITEMS = ['Search'];
+
+        this.menuAnchor = MRE.Actor.Create(this.context, {
+            actor:{ 
+                parentId: this.anchor.id
+            }
+        });
+        let boxMeshId = this.assets.createBoxMesh('main_menu_btn_mesh', MENU_CELL_WIDTH, MENU_CELL_HEIGHT, MENU_CELL_DEPTH).id;
+        let boxMaterial = this.materials.get('gray');
+        let buttonOptions = {
+            parentId: this.menuAnchor.id,
+            boxMeshId,
+            boxMaterial,
+            boxDimensions: { x: MENU_CELL_WIDTH, y: MENU_CELL_HEIGHT, z: MENU_CELL_DEPTH },
+            textHeight: MENU_TEXT_HEIGHT
+        };
+
+        this.menu = new GridMenu(this.context, this.menuAnchor, {
+            buttonOptions,
+            gridAlignment: MRE.BoxAlignment.MiddleRight,
+            texts: [MENU_ITEMS],
+            margins: {x: MENU_CELL_MARGIN, y: MENU_CELL_MARGIN/2}
+        });
+
+        this.menu.addButtonBehavior((coord: MRE.Vector2, user: MRE.User)=>{
+            let col = coord.y;
+            let item = MENU_ITEMS[col];
+            switch(item){
+                case 'Search':
+                    user.prompt("Search Worlds:", true).then(async (dialog) => {
+                        if (dialog.submitted) {
+                            let text = dialog.text;
+                            let result = await this.crawler.searchPortals(text);
+
+                            this.portalItems = result.items;
+                            this.updatePortals();
+                        }
+                    });
+                    break;
+            }
+        });
+    }
+
+    private updatePortals(){
+        // clear existing portals
+        this.portals.forEach(p=>p.remove());
+        this.portals = [];
+
+        this.portalGrid = new MRE.PlanarGridLayout(this.portalGridAnchor);
+        this.portalItems.forEach((p,i)=>{
+            let uri = p.thumbnailUri;
+            let panelOptions = {
+                boxMeshId: this.panelBoxMeshId,
+                boxMaterial: this.materials.get('gray'),
+                planeMeshId: this.panelPlaneMeshId,
+                planeMaterial: this.loadMaterial(p.spaceId, uri),
+                boxDimensions: PANEL_DIMENSIONS
+            };
+            let portal = new Portal(this.context, this.assets, this, {
+                parentId: this.portalGridAnchor.id,
+                panelOptions,
+                spaceId: p.spaceId
+            });
+            this.portals.push(portal);
+
+            this.portalGrid.addCell({
+                row: 0,
+                column: i,
+                width: PORTAL_DIMENSIONS.width,
+                height: PORTAL_DIMENSIONS.height,
+                contents: portal.portal
+            });
+        });
+
+        this.portalGrid.gridAlignment = MRE.BoxAlignment.MiddleCenter;
+        this.portalGrid.applyLayout();
+    }
+
+    private async loadMaterials(){
+        this.materials.set('trans_red', this.assets.createMaterial('trans_red', { color: MRE.Color4.FromColor3(MRE.Color3.Red(), DEBUG ? 0.3 : 0.0), alphaMode: MRE.AlphaMode.Blend }));
+        this.materials.set('trans_gray', this.assets.createMaterial('trans_gray', { color: MRE.Color4.FromColor3(MRE.Color3.Gray(), DEBUG ? 0.3 : 0.0), alphaMode: MRE.AlphaMode.Blend }));
+        this.materials.set('invis', this.assets.createMaterial('trans', { color: MRE.Color4.FromColor3(MRE.Color3.Red(), 0.0), alphaMode: MRE.AlphaMode.Blend }));
+        this.materials.set('debug', this.assets.createMaterial('debug', { color: MRE.Color4.FromColor3(MRE.Color3.Teal(), 0.3), alphaMode: MRE.AlphaMode.Blend }));
+        this.materials.set('highlight', this.assets.createMaterial('debug', { color: MRE.Color4.FromColor3(MRE.Color3.Red(), 0.3), alphaMode: MRE.AlphaMode.Blend }));
+
+        this.materials.set('gray', this.assets.createMaterial('gray', { color: MRE.Color3.Gray() }));
+        this.materials.set('white', this.assets.createMaterial('white', { color: MRE.Color3.White() }));
+
+        this.materials.set('back', this.loadMaterial('back', 'images/back.jpg'));
+    }
+
+    public loadMaterial(name: string, uri: string){
+        let texture;
+        if (!this.textures.has('texture_'+name)){
+            texture = this.assets.createTexture('texture_'+name, {uri});
+            this.textures.set('texture_'+name, texture);
+        }else{
+            texture = this.textures.get('texture_'+name);
+        }
+
+        let material;
+        if(!this.materials.has('material_'+name)){
+            material = this.assets.createMaterial('material_'+name, { color: MRE.Color3.White(), mainTextureId: texture.id });
+            this.materials.set('material_'+name, material);
+        }else{
+            material = this.materials.get('material_'+name);
+        }
+        return material;
+    }
+}
+
+interface portalOptions {
+    parentId: MRE.Guid,
+    spaceId: string,
+    panelOptions: PanelOptions
+}
+
+class Portal {
+    private context: MRE.Context;
+    private assets: MRE.AssetContainer;
+    private app: PortalApp;
+
+    private _portal: MRE.Actor;
+    private _panel: Panel;
+
+    get portal() { return this._portal };
+
+    constructor(private _context: MRE.Context, private _assets: MRE.AssetContainer, app: PortalApp, options: portalOptions){
+        this.context = _context;
+        this.assets = _assets;
+        this.app = app;
+
+        this._portal = MRE.Actor.CreateFromLibrary(this.context, {
+            resourceId: `teleporter:space/${options.spaceId}?label=true`,
             actor: {
-                name: 'Teleporter to Campfire',
-                parentId: root.id,
+                name: 'portal',
+                parentId: options.parentId,
                 transform: {
                     local: {
-                        position: { x: 1.2, y: 0.0, z: -0.5 }
+                        position: { x: 0, y: PORTAL_DIMENSIONS.height/2, z: 0 }
                     }
                 }
             }
         });
+
+        this._panel = new Panel(this.context, this.assets, options.panelOptions);
+    }
+
+    public remove(){
+        this._portal.destroy();
+        this._panel.remove();
+    }
+
+}
+
+interface PanelOptions {
+    boxMeshId: MRE.Guid,
+    boxMaterial: MRE.Material,
+    planeMeshId: MRE.Guid,
+    planeMaterial: MRE.Material,
+    boxDimensions: { width: number, height: number, depth: number },
+    planeOffset?: number
+}
+
+class Panel {
+    private context: MRE.Context;
+    private assets: MRE.AssetContainer;
+    private options: PanelOptions;
+
+    private _plane: MRE.Actor;
+    private _box: MRE.Actor;
+
+    get box() {return this._box}
+    get plane() {return this._plane}
+
+    constructor(context: MRE.Context, assets: MRE.AssetContainer, options: PanelOptions){
+        this.context = context;
+        this.assets = assets;
+        this.options = options;
+
+        this.init();
+    }
+
+    private async init(){
+        this._box = MRE.Actor.Create(this.context, {
+            actor: {
+                appearance: {
+                    meshId: this.options.boxMeshId,
+                    materialId: this.options.boxMaterial.id
+                },
+                collider: { 
+                    geometry: { shape: MRE.ColliderType.Auto },
+                    layer: MRE.CollisionLayer.Default
+                }
+            }
+        });
+
+        if (this.options.planeMaterial !== undefined){
+            this._plane = MRE.Actor.Create(this.context, {
+                actor: {
+                    parentId: this._box.id,
+                    appearance: {
+                        meshId: this.options.planeMeshId,
+                        materialId: this.options.planeMaterial.id
+                    },
+                    transform: {
+                        local: {
+                            position: {
+                                x: 0,
+                                y: -this.options.boxDimensions.depth*0.5 + (this.options.planeOffset !== undefined ? this.options.planeOffset : this.options.boxDimensions.depth*0.1),
+                                z: 0
+                            },
+                            rotation: MRE.Quaternion.FromEulerAngles(0 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians),
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    public setParent(parentId: MRE.Guid){
+        this._box.parentId = parentId;
+    }
+
+    public remove(){
+        this._box.destroy();
     }
 }
