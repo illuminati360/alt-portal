@@ -1,18 +1,20 @@
 import * as MRE from '@microsoft/mixed-reality-extension-sdk';
-import { PlanarGridLayout, Plane, Quaternion } from '@microsoft/mixed-reality-extension-sdk';
-import { AltVRPortalCrawler, PortalItem } from './database';
-import { GridMenu } from './menu';
+import { PlanarGridLayout, Quaternion } from '@microsoft/mixed-reality-extension-sdk';
+import { AltVRPortalCrawler, PortalItem, PagerItem } from './database';
+import { GridMenu, Selector } from './menu';
 
-const MENU_CELL_WIDTH = 0.2;
-const MENU_CELL_HEIGHT = 0.1;
+const MENU_CELL_WIDTH = 0.1;
+const MENU_CELL_HEIGHT = 0.05;
 const MENU_CELL_DEPTH = 0.02;
 const MENU_CELL_MARGIN = MENU_CELL_WIDTH/6;
-const MENU_TEXT_HEIGHT = 0.009;
+const MENU_TEXT_HEIGHT = 0.01;
 
-const PORTAL_DIMENSIONS = {width: 1, height: 1, depth: 2};
-const PANEL_DIMENSIONS = {width: 0.3, height: 0.01, depth: 0.3};
+const PORTAL_DIMENSIONS = {width: 1, height: 2, depth: 1};
+const PORTAL_MARGIN = 0.1;
+const PANEL_DIMENSIONS = {width: 0.8, height: 0.8, depth: 0.01};
+const PORTAL_SCALE = 0.2;
 
-const DEBUG = false;
+const DEBUG = true;
 
 export default class PortalApp {
     private context: MRE.Context;
@@ -30,13 +32,15 @@ export default class PortalApp {
     private menuAnchor: MRE.Actor;
     private menu: GridMenu;
 
+    private pagerAnchor: MRE.Actor;
+    private pager: Selector;
+
     private panelBoxMeshId: MRE.Guid;
     private panelPlaneMeshId: MRE.Guid;
 
     // logic
     private crawler: AltVRPortalCrawler;
-    private portalItems: PortalItem[];
-    private portals: Portal[];
+    private portals: Portal[] = [];
 
     private portalGridAnchor: MRE.Actor;
     private portalGrid: PlanarGridLayout;
@@ -52,26 +56,44 @@ export default class PortalApp {
         this.materials = new Map<string, MRE.Material>();
         this.sounds = new Map<string, MRE.Sound>();
 
-        this.anchor = MRE.Actor.Create(this.context, {
-            actor:{ 
-                parentId: this.anchor.id,
-                transform: {
-                    local: { rotation : Quaternion.FromEulerAngles(
-                        -90,
-                        0,
-                        0
-                    ) }
-                }
-            },
-        });
+        this.panelBoxMeshId = this.assets.createBoxMesh('panel_box', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height, PANEL_DIMENSIONS.depth).id;
+        this.panelPlaneMeshId = this.assets.createPlaneMesh('panel_plane', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height).id;
+
+        this.anchor = MRE.Actor.Create(this.context, {});
         this.portalGridAnchor = MRE.Actor.Create(this.context, {
             actor:{ 
                 parentId: this.anchor.id,
+                transform: {
+                    local: { 
+                        position: {
+                            x: 0,
+                            y: 0,
+                            z: PORTAL_MARGIN
+                        },
+                        rotation: Quaternion.FromEulerAngles(
+                            -90*MRE.DegreesToRadians,
+                            180*MRE.DegreesToRadians,
+                            0
+                        ) 
+                    }
+                }
             },
         });
 
-        this.panelBoxMeshId = this.assets.createBoxMesh('panel_box', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height, PANEL_DIMENSIONS.depth).id;
-        this.panelPlaneMeshId = this.assets.createPlaneMesh('panel_plane', PANEL_DIMENSIONS.width, PANEL_DIMENSIONS.height).id;
+        this.pagerAnchor = MRE.Actor.Create(this.context, {
+            actor:{ 
+                parentId: this.anchor.id,
+                transform: {
+                    local: { 
+                        position: {
+                            x: 0,
+                            y: -MENU_CELL_HEIGHT - MENU_CELL_MARGIN,
+                            z: 0
+                        }
+                    }
+                }
+            },
+        });
 
         this.crawler = new AltVRPortalCrawler();
 
@@ -80,14 +102,6 @@ export default class PortalApp {
 
     private async init(){
         await this.loadMaterials();
-        this.anchor = MRE.Actor.Create(this.context, {
-            actor:{ 
-                grabbable: false,
-                transform: { 
-                    local: { position: {x: 0, y: 0, z: 0} }
-                }
-            },
-        });
         this.createMenu();
     }
 
@@ -111,7 +125,7 @@ export default class PortalApp {
 
         this.menu = new GridMenu(this.context, this.menuAnchor, {
             buttonOptions,
-            gridAlignment: MRE.BoxAlignment.MiddleRight,
+            gridAlignment: MRE.BoxAlignment.MiddleCenter,
             texts: [MENU_ITEMS],
             margins: {x: MENU_CELL_MARGIN, y: MENU_CELL_MARGIN/2}
         });
@@ -126,8 +140,8 @@ export default class PortalApp {
                             let text = dialog.text;
                             let result = await this.crawler.searchPortals(text);
 
-                            this.portalItems = result.items;
-                            this.updatePortals();
+                            this.updatePortals(result.items);
+                            this.updatePager(result.pager);
                         }
                     });
                     break;
@@ -135,13 +149,14 @@ export default class PortalApp {
         });
     }
 
-    private updatePortals(){
+    private updatePortals(portalItems: PortalItem[]){
+        const ROW_LENGTH = 6;
         // clear existing portals
         this.portals.forEach(p=>p.remove());
         this.portals = [];
 
         this.portalGrid = new MRE.PlanarGridLayout(this.portalGridAnchor);
-        this.portalItems.forEach((p,i)=>{
+        portalItems.forEach((p,i)=>{
             let uri = p.thumbnailUri;
             let panelOptions = {
                 boxMeshId: this.panelBoxMeshId,
@@ -158,16 +173,65 @@ export default class PortalApp {
             this.portals.push(portal);
 
             this.portalGrid.addCell({
-                row: 0,
-                column: i,
-                width: PORTAL_DIMENSIONS.width,
-                height: PORTAL_DIMENSIONS.height,
+                row: Math.floor(i/ROW_LENGTH),
+                column: i%ROW_LENGTH,
+                width: (PORTAL_DIMENSIONS.width + PORTAL_MARGIN*2) * PORTAL_SCALE,
+                height: (PORTAL_DIMENSIONS.depth + PORTAL_MARGIN*2) * PORTAL_SCALE,
                 contents: portal.portal
             });
         });
 
-        this.portalGrid.gridAlignment = MRE.BoxAlignment.MiddleCenter;
+        this.portalGrid.gridAlignment = MRE.BoxAlignment.TopCenter;
         this.portalGrid.applyLayout();
+
+        this.portals.forEach((p,i)=>{
+            let rowNum = Math.floor(this.portals.length/ROW_LENGTH);
+            let row = Math.floor(i/ROW_LENGTH);
+            p.offset(PANEL_DIMENSIONS.height*(rowNum-row)*PORTAL_SCALE);
+        });
+    }
+
+    private updatePager(pagerItems: PagerItem[]){
+        if (this.pager) {
+            this.pager.remove();
+        }
+
+        let menuItems = pagerItems.map(p=>p.text);
+
+        let boxMeshId = this.assets.createBoxMesh('main_menu_btn_mesh', MENU_CELL_WIDTH, MENU_CELL_HEIGHT, MENU_CELL_DEPTH).id;
+        let boxMaterial = this.materials.get('gray');
+        let buttonOptions = {
+            parentId: this.pagerAnchor.id,
+            boxMeshId,
+            boxMaterial,
+            boxDimensions: { x: MENU_CELL_WIDTH, y: MENU_CELL_HEIGHT, z: MENU_CELL_DEPTH },
+            textHeight: MENU_TEXT_HEIGHT
+        };
+
+        this.pager = new Selector(this.context, this.pagerAnchor, {
+            buttonOptions,
+            gridAlignment: MRE.BoxAlignment.MiddleCenter,
+            texts: [menuItems],
+            margins: {x: MENU_CELL_MARGIN, y: MENU_CELL_MARGIN/2},
+            defaultMaterial: this.materials.get('gray'),
+            highlightMaterial: this.materials.get('highlight'),
+            toggle: false
+        });
+
+        // highlight current page
+        let i = pagerItems.findIndex(p=>!p.url);
+        this.pager.highlight(new MRE.Vector2(0, i));
+
+        this.pager.addButtonBehavior(async (coord: MRE.Vector2, user: MRE.User)=>{
+            let col = coord.y;
+            let url = pagerItems[col].url;
+            if (url){
+                let result = await this.crawler.searchPortals('', url);
+
+                this.updatePortals(result.items);
+                this.updatePager(result.pager);
+            }
+        });
     }
 
     private async loadMaterials(){
@@ -179,8 +243,6 @@ export default class PortalApp {
 
         this.materials.set('gray', this.assets.createMaterial('gray', { color: MRE.Color3.Gray() }));
         this.materials.set('white', this.assets.createMaterial('white', { color: MRE.Color3.White() }));
-
-        this.materials.set('back', this.loadMaterial('back', 'images/back.jpg'));
     }
 
     public loadMaterial(name: string, uri: string){
@@ -203,10 +265,10 @@ export default class PortalApp {
     }
 }
 
-interface portalOptions {
+interface PortalOptions {
     parentId: MRE.Guid,
     spaceId: string,
-    panelOptions: PanelOptions
+    panelOptions: Partial<PanelOptions>
 }
 
 class Portal {
@@ -219,7 +281,7 @@ class Portal {
 
     get portal() { return this._portal };
 
-    constructor(private _context: MRE.Context, private _assets: MRE.AssetContainer, app: PortalApp, options: portalOptions){
+    constructor(private _context: MRE.Context, private _assets: MRE.AssetContainer, app: PortalApp, options: PortalOptions){
         this.context = _context;
         this.assets = _assets;
         this.app = app;
@@ -231,13 +293,32 @@ class Portal {
                 parentId: options.parentId,
                 transform: {
                     local: {
-                        position: { x: 0, y: PORTAL_DIMENSIONS.height/2, z: 0 }
+                        position: { 
+                            x: 0,
+                            y: PORTAL_DIMENSIONS.height/2,
+                            z: 0 
+                        },
+                        rotation: Quaternion.FromEulerAngles(
+                            90*MRE.DegreesToRadians,
+                            0,
+                            0
+                        ),
+                        scale: {
+                            x: PORTAL_SCALE,
+                            y: PORTAL_SCALE,
+                            z: PORTAL_SCALE,
+                        }
                     }
                 }
             }
         });
 
-        this._panel = new Panel(this.context, this.assets, options.panelOptions);
+        options.panelOptions.parentId = this._portal.id;
+        this._panel = new Panel(this.context, this.assets, options.panelOptions as PanelOptions);
+    }
+
+    public offset(zOffset: number){
+        this._portal.transform.local.position.z += zOffset;
     }
 
     public remove(){
@@ -248,6 +329,7 @@ class Portal {
 }
 
 interface PanelOptions {
+    parentId: MRE.Guid,
     boxMeshId: MRE.Guid,
     boxMaterial: MRE.Material,
     planeMeshId: MRE.Guid,
@@ -278,6 +360,7 @@ class Panel {
     private async init(){
         this._box = MRE.Actor.Create(this.context, {
             actor: {
+                parentId: this.options.parentId,
                 appearance: {
                     meshId: this.options.boxMeshId,
                     materialId: this.options.boxMaterial.id
@@ -285,6 +368,16 @@ class Panel {
                 collider: { 
                     geometry: { shape: MRE.ColliderType.Auto },
                     layer: MRE.CollisionLayer.Default
+                },
+                transform: {
+                    local: {
+                        position: { x: 0, y: PORTAL_DIMENSIONS.height/2 + PANEL_DIMENSIONS.height*1.5, z: 0 },
+                        rotation: Quaternion.FromEulerAngles(
+                            0,
+                            180*MRE.DegreesToRadians,
+                            0
+                        )
+                    }
                 }
             }
         });
@@ -301,10 +394,10 @@ class Panel {
                         local: {
                             position: {
                                 x: 0,
-                                y: -this.options.boxDimensions.depth*0.5 + (this.options.planeOffset !== undefined ? this.options.planeOffset : this.options.boxDimensions.depth*0.1),
-                                z: 0
+                                y: 0,
+                                z: -this.options.boxDimensions.depth*0.5 - (this.options.planeOffset !== undefined ? this.options.planeOffset : this.options.boxDimensions.depth*0.1),
                             },
-                            rotation: MRE.Quaternion.FromEulerAngles(0 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians),
+                            rotation: MRE.Quaternion.FromEulerAngles(-90 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians, 0 * MRE.DegreesToRadians),
                         }
                     }
                 }

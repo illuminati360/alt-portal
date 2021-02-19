@@ -1,4 +1,14 @@
-#### todos
-4. createPortal: image, text, artifact
+### install
+```
+npm install
+```
 
-5. planarlayout, width,
+### build
+```
+npm run build
+```
+
+### start
+```
+EMAIL=<$your_email> PASSWORD=<$your_password> npm start
+```

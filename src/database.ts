@@ -1,9 +1,5 @@
-import fs from 'fs';
 import superagent from 'superagent';
 import cheerio from 'cheerio';
-import * as MRE from '@microsoft/mixed-reality-extension-sdk';
-
-import { fetchJSON } from './utils';
 
 const email = process.env['EMAIL'];
 const password = process.env['PASSWORD'];
@@ -25,12 +21,12 @@ export class AltVRPortalCrawler{
     constructor(){
     }
 
-    public async searchPortals(keyword: string){
+    public async searchPortals(keyword: string, _url?: string){
         let token = await this.getToken();
         let cookie = await this.login(token);
-        if (keyword.length < 2){ return {items: [], pager: []}; }
-        let relativePath = `/worlds/search?q=${keyword}`
-        let url = `${BASEURL}${relativePath}`;
+        if (_url === undefined && keyword.length < 2){ return {items: [], pager: []}; }
+        let relativePath = `/worlds/search?q=${keyword}`;
+        let url = _url ? _url : `${BASEURL}${relativePath}`;
         let text = await this.getPage(url, cookie);
         return this.parseText(text);
     }
@@ -110,7 +106,7 @@ export class AltVRPortalCrawler{
         var $ = cheerio.load(text);
         $("ul.pagination a").each((i,e) => {
             let relativePath = $(e).attr('href');
-            let url = `${BASEURL}${relativePath}`;
+            let url = relativePath ? `${BASEURL}${relativePath}` : null;
             let text = $(e).text();
             let it = {
                 text,
